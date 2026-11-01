@@ -93,35 +93,31 @@ def read_caption_lines(window) -> list[str]:
 
 
 class CaptionAccumulator:
-    """Convert the captions window's rolling text into non-repeating chunks."""
+    """Convert rolling caption snapshots into a single non-repeating stream."""
 
     def __init__(self) -> None:
-        self._previous_words: list[str] = []
+        self._committed_words: list[str] = []
 
     def update(self, current: Iterable[str]) -> list[str]:
         words = " ".join(" ".join(current).split()).split()
         if not words:
             return []
 
-        if words == self._previous_words:
+        overlap = self._longest_committed_overlap(words)
+        added = words[overlap:]
+        if not added:
             return []
-        if self._previous_words and words[: len(self._previous_words)] == self._previous_words:
-            added = words[len(self._previous_words) :]
-        elif self._previous_words[: len(words)] == words:
-            added = []
-        else:
-            overlap = self._overlap(self._previous_words, words)
-            added = words[overlap:]
 
-        self._previous_words = words
-        return [" ".join(added)] if added else []
+        self._committed_words.extend(added)
+        return [" ".join(added)]
 
-    @staticmethod
-    def _overlap(previous: list[str], current: list[str]) -> int:
-        maximum = min(len(previous), len(current))
+    def _longest_committed_overlap(self, current: list[str]) -> int:
+        maximum = min(len(self._committed_words), len(current))
         for size in range(maximum, 0, -1):
-            if previous[-size:] == current[:size]:
-                return size
+            prefix = current[:size]
+            for start in range(len(self._committed_words) - size + 1):
+                if self._committed_words[start : start + size] == prefix:
+                    return size
         return 0
 
 
