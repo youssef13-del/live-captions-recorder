@@ -93,30 +93,46 @@ def read_caption_lines(window) -> list[str]:
 
 
 class CaptionAccumulator:
-    """Convert rolling caption snapshots into a single non-repeating stream."""
+    """Convert rolling caption snapshots into a one-word-at-a-time stream."""
 
     def __init__(self) -> None:
-        self._committed_words: list[str] = []
+        self._last_snapshot: list[str] = []
+        self._emitted_words: list[str] = []
 
     def update(self, current: Iterable[str]) -> list[str]:
         words = " ".join(" ".join(current).split()).split()
         if not words:
             return []
 
-        overlap = self._longest_committed_overlap(words)
+        if words == self._last_snapshot:
+            return []
+
+        overlap = self._longest_suffix_prefix_overlap(words)
+        if overlap == 0:
+            overlap = self._longest_saved_prefix(words)
         added = words[overlap:]
+        self._last_snapshot = words
         if not added:
             return []
 
-        self._committed_words.extend(added)
-        return [" ".join(added)]
+        self._emitted_words.extend(added)
+        return added
 
-    def _longest_committed_overlap(self, current: list[str]) -> int:
-        maximum = min(len(self._committed_words), len(current))
+    def _longest_suffix_prefix_overlap(self, current: list[str]) -> int:
+        maximum = min(len(self._last_snapshot), len(current))
         for size in range(maximum, 0, -1):
+            if self._last_snapshot[-size:] == current[:size]:
+                return size
+        if self._last_snapshot and current[:1] == self._last_snapshot[:1]:
+            return min(len(self._last_snapshot), len(current))
+        return 0
+
+    def _longest_saved_prefix(self, current: list[str]) -> int:
+        maximum = min(len(self._emitted_words), len(current))
+        for size in range(maximum, 1, -1):
             prefix = current[:size]
-            for start in range(len(self._committed_words) - size + 1):
-                if self._committed_words[start : start + size] == prefix:
+            for start in range(len(self._emitted_words) - size + 1):
+                if self._emitted_words[start : start + size] == prefix:
                     return size
         return 0
 
@@ -144,12 +160,12 @@ def record(
     with output.open("a", encoding="utf-8", newline="\n") as file:
         while stop_event is None or not stop_event.is_set():
             current = read_caption_lines(window)
-            added = accumulator.update(current)
-            for line in added:
-                file.write(line + "\n")
+            added_words = accumulator.update(current)
+            if added_words:
+                file.write(" ".join(added_words) + " ")
                 file.flush()
-            if added and on_lines is not None:
-                on_lines(added)
+            if added_words and on_lines is not None:
+                on_lines(added_words)
             time.sleep(poll_interval)
 
 
@@ -338,7 +354,7 @@ class LiveCaptionsApp:
                     self._append_lines(cast(list[str], payload))
                     self.status.set("Recording and saving...")
                     self.total_lines += len(cast(list[str], payload))
-                    self.line_count.set(f"{self.total_lines} lines")
+                    self.line_count.set(f"{self.total_lines} words")
                 elif event == "error":
                     if self.is_recording:
                         self._stop_recording()
@@ -353,12 +369,13 @@ class LiveCaptionsApp:
         self.transcript.delete("1.0", "end")
         self.transcript.configure(state="disabled")
         self.total_lines = 0
-        self.line_count.set("0 lines")
+        self.line_count.set("0 words")
 
     def _append_lines(self, lines: list[str]) -> None:
         self.transcript.configure(state="normal")
-        for line in lines:
-            self.transcript.insert("end", f"{line}\n")
+        existing = self.transcript.get("1.0", "end-1c")
+        separator = "" if not existing or existing.endswith((" ", "\n")) else " "
+        self.transcript.insert("end", separator + " ".join(lines))
         self.transcript.see("end")
         self.transcript.configure(state="disabled")
 
