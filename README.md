@@ -19,7 +19,7 @@ save** when finished. The app flushes the file continuously while recording.
 Run `build_desktop_app.bat` to create:
 
 ```powershell
-dist\LiveCaptionsRecorder\LiveCaptionsRecorder.exe
+dist\LiveCaptionsRecorder.exe
 ```
 
 Windows Live Captions must be available under **Settings > Accessibility >

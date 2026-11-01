@@ -7,7 +7,6 @@ preserves the text exposed by the operating system.
 
 from __future__ import annotations
 
-import argparse
 import ctypes
 import queue
 import subprocess
@@ -140,33 +139,26 @@ class CaptionAccumulator:
 def record(
     output: Path,
     poll_interval: float,
-    timeout: float,
     stop_event: threading.Event | None = None,
-    on_lines: Callable[[list[str]], None] | None = None,
+    on_words: Callable[[list[str]], None] | None = None,
 ) -> None:
-    """Poll the captions window, append new lines, and optionally publish them."""
-    started = time.monotonic()
-    window = None
-    while window is None:
-        try:
-            window = find_captions_window()
-        except RuntimeError:
-            if time.monotonic() - started >= timeout:
-                raise
-            time.sleep(0.25)
-
+    """Poll Live Captions and append each newly recognized word once."""
+    window = find_captions_window()
     output.parent.mkdir(parents=True, exist_ok=True)
     accumulator = CaptionAccumulator()
     with output.open("a", encoding="utf-8", newline="\n") as file:
         while stop_event is None or not stop_event.is_set():
             current = read_caption_lines(window)
-            added_words = accumulator.update(current)
-            if added_words:
-                file.write(" ".join(added_words) + " ")
+            words = accumulator.update(current)
+            if words:
+                file.write(" ".join(words) + " ")
                 file.flush()
-            if added_words and on_lines is not None:
-                on_lines(added_words)
-            time.sleep(poll_interval)
+                if on_words is not None:
+                    on_words(words)
+            if stop_event is not None:
+                stop_event.wait(poll_interval)
+            else:
+                time.sleep(poll_interval)
 
 
 class LiveCaptionsApp:
@@ -181,7 +173,7 @@ class LiveCaptionsApp:
         self.output_path = tk.StringVar(value=str(Path("live_captions.txt").resolve()))
         self.status = tk.StringVar(value="Ready")
         self.elapsed = tk.StringVar(value="00:00:00")
-        self.line_count = tk.StringVar(value="0 lines")
+        self.line_count = tk.StringVar(value="0 words")
         self.file_state = tk.StringVar(value="Not recording")
         self.is_recording = False
         self.started_at = 0.0
@@ -325,9 +317,8 @@ class LiveCaptionsApp:
             record(
                 output,
                 poll_interval=0.25,
-                timeout=10.0,
                 stop_event=self.stop_event,
-                on_lines=lambda lines: self.events.put(("lines", lines)),
+                on_words=lambda words: self.events.put(("words", words)),
             )
             self.events.put(("stopped", None))
         except (OSError, RuntimeError, ValueError) as error:
@@ -350,10 +341,11 @@ class LiveCaptionsApp:
         try:
             while True:
                 event, payload = self.events.get_nowait()
-                if event == "lines":
-                    self._append_lines(cast(list[str], payload))
+                if event == "words":
+                    words = cast(list[str], payload)
+                    self._append_words(words)
                     self.status.set("Recording and saving...")
-                    self.total_lines += len(cast(list[str], payload))
+                    self.total_lines += len(words)
                     self.line_count.set(f"{self.total_lines} words")
                 elif event == "error":
                     if self.is_recording:
@@ -371,11 +363,11 @@ class LiveCaptionsApp:
         self.total_lines = 0
         self.line_count.set("0 words")
 
-    def _append_lines(self, lines: list[str]) -> None:
+    def _append_words(self, words: list[str]) -> None:
         self.transcript.configure(state="normal")
         existing = self.transcript.get("1.0", "end-1c")
         separator = "" if not existing or existing.endswith((" ", "\n")) else " "
-        self.transcript.insert("end", separator + " ".join(lines))
+        self.transcript.insert("end", separator + " ".join(words) + " ")
         self.transcript.see("end")
         self.transcript.configure(state="disabled")
 
@@ -397,84 +389,13 @@ class LiveCaptionsApp:
         self.root.destroy()
 
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Save Windows Live Captions to a UTF-8 text file."
-    )
-    parser.add_argument(
-        "output",
-        nargs="?",
-        type=Path,
-        default=Path("live_captions.txt"),
-        help="Output text file (default: live_captions.txt)",
-    )
-    parser.add_argument(
-        "--no-toggle",
-        action="store_true",
-        help="Do not press Win+Ctrl+L; use this when captions are already on.",
-    )
-    parser.add_argument(
-        "--leave-on",
-        action="store_true",
-        help="Do not press Win+Ctrl+L when stopping with Ctrl+C.",
-    )
-    parser.add_argument(
-        "--poll-interval",
-        type=float,
-        default=0.25,
-        help="Seconds between UI reads (default: 0.25).",
-    )
-    parser.add_argument(
-        "--startup-timeout",
-        type=float,
-        default=10.0,
-        help="Seconds to wait for the captions window (default: 10).",
-    )
-    parser.add_argument(
-        "--cli",
-        action="store_true",
-        help="Use the original command-line recorder instead of the desktop app.",
-    )
-    return parser.parse_args()
-
-
 def main() -> int:
-    args = parse_args()
-    if not args.cli:
-        if sys.platform != "win32":
-            print("The desktop app only runs on Windows.", file=sys.stderr)
-            return 2
-        root = tk.Tk()
-        LiveCaptionsApp(root)
-        root.mainloop()
-        return 0
-
-    if args.poll_interval <= 0 or args.startup_timeout <= 0:
-        print("poll and timeout values must be greater than zero.", file=sys.stderr)
-        return 2
     if sys.platform != "win32":
         print("This tool only runs on Windows.", file=sys.stderr)
         return 2
-
-    toggled = not args.no_toggle
-    try:
-        if toggled:
-            press_live_captions_hotkey()
-        print(f"Writing captions to {args.output.resolve()}")
-        print("Press Ctrl+C to stop.")
-        record(
-            args.output,
-            args.poll_interval,
-            args.startup_timeout,
-        )
-    except KeyboardInterrupt:
-        print("\nStopped.")
-    except (OSError, RuntimeError, ValueError) as error:
-        print(f"Error: {error}", file=sys.stderr)
-        return 1
-    finally:
-        if toggled and not args.leave_on:
-            press_live_captions_hotkey()
+    root = tk.Tk()
+    LiveCaptionsApp(root)
+    root.mainloop()
     return 0
 
 
