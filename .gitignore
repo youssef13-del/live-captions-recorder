@@ -1,0 +1,6 @@
+__pycache__/
+build/
+dist/
+*.pyc
+live_captions.txt
+LiveCaptionsRecorder.spec
