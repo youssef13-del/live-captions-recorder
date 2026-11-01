@@ -92,10 +92,37 @@ def read_caption_lines(window) -> list[str]:
     return lines
 
 
-def new_lines(previous: Iterable[str], current: Iterable[str]) -> list[str]:
-    """Return the current caption lines that were not already written."""
-    previous_set = set(previous)
-    return [line for line in current if line not in previous_set]
+class CaptionAccumulator:
+    """Convert the captions window's rolling text into non-repeating chunks."""
+
+    def __init__(self) -> None:
+        self._previous_words: list[str] = []
+
+    def update(self, current: Iterable[str]) -> list[str]:
+        words = " ".join(" ".join(current).split()).split()
+        if not words:
+            return []
+
+        if words == self._previous_words:
+            return []
+        if self._previous_words and words[: len(self._previous_words)] == self._previous_words:
+            added = words[len(self._previous_words) :]
+        elif self._previous_words[: len(words)] == words:
+            added = []
+        else:
+            overlap = self._overlap(self._previous_words, words)
+            added = words[overlap:]
+
+        self._previous_words = words
+        return [" ".join(added)] if added else []
+
+    @staticmethod
+    def _overlap(previous: list[str], current: list[str]) -> int:
+        maximum = min(len(previous), len(current))
+        for size in range(maximum, 0, -1):
+            if previous[-size:] == current[:size]:
+                return size
+        return 0
 
 
 def record(
@@ -117,17 +144,16 @@ def record(
             time.sleep(0.25)
 
     output.parent.mkdir(parents=True, exist_ok=True)
-    previous: list[str] = []
+    accumulator = CaptionAccumulator()
     with output.open("a", encoding="utf-8", newline="\n") as file:
         while stop_event is None or not stop_event.is_set():
             current = read_caption_lines(window)
-            added = new_lines(previous, current)
+            added = accumulator.update(current)
             for line in added:
                 file.write(line + "\n")
                 file.flush()
             if added and on_lines is not None:
                 on_lines(added)
-            previous = current
             time.sleep(poll_interval)
 
 
